@@ -1,15 +1,13 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.data import DataLoader
 from torch.nn import TransformerEncoderLayer, TransformerEncoder
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from sklearn.metrics import roc_auc_score
 import numpy as np
 from tqdm import tqdm
-
-import sys 
-sys.path.append("/content/RS_competition")
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -35,6 +33,7 @@ class EmbeddingLayer(nn.Module):
         self.tag_emb.weight.data[0] = 0
         
         # Final embedding dim = frozen (128) + learnable (64) + tags (16) = 208
+        # But we'll project to fixed dimension
         self.final_dim = embed_dim + 128 + tag_embed_dim
     
     def forward(self, item_ids):
@@ -54,7 +53,6 @@ class EmbeddingLayer(nn.Module):
         tag_repr = self.tag_emb(tags)  # (..., 5, tag_embed_dim)
         tag_repr = tag_repr.mean(dim=-2)  # (..., tag_embed_dim)
         
-        # Concatenate exactly as winning solution
         final_emb = torch.cat([frozen, learnable, tag_repr], dim=-1)  # (..., final_dim)
         return final_emb
 
@@ -85,37 +83,41 @@ class SequentialLearning(nn.Module):
         self.output_dim = k * (item_embed_dim * 2) + (item_embed_dim * 2)
     
     def forward(self, item_ids, item_embeds, target_emb):
-        """
-        Args:
-            item_ids: (B, seq_len) - for masking
-            item_embeds: (B, seq_len, item_embed_dim)
-            target_emb: (B, item_embed_dim)
-            
-        Returns:
-            S_o: (B, output_dim)
-        """
         batch_size, seq_len = item_ids.shape
         
         # Concatenate target with each sequence item
-        target_expanded = target_emb.unsqueeze(1).expand(-1, seq_len, -1)  # (B, seq_len, item_embed_dim)
-        seq_input = torch.cat([item_embeds, target_expanded], dim=-1)  # (B, seq_len, item_embed_dim*2)
+        target_expanded = target_emb.unsqueeze(1).expand(-1, seq_len, -1)
+        seq_input = torch.cat([item_embeds, target_expanded], dim=-1)
+        
+        # Compute similarity scores
+        sim_scores = F.cosine_similarity(target_emb.unsqueeze(1), item_embeds, dim=-1)  # (B, seq_len)
         
         # Create padding mask
         padding_mask = (item_ids == 0)
         
+        # items that are either padded OR similar to target
+        sim_mask = (sim_scores > 0.5)  # (B, seq_len)
+        
+        # Combine: use padding mask, but weight by similarity
+        weights = torch.where(padding_mask, torch.zeros_like(sim_scores), sim_scores)  # (B, seq_len)
+        weights = weights.unsqueeze(-1)  # (B, seq_len, 1)
+        
         # Transformer
         S = self.transformer(seq_input, src_key_padding_mask=padding_mask)  # (B, seq_len, item_embed_dim*2)
         
-        # Latest k items
-        S_k = S[:, -self.k:, :].reshape(batch_size, -1)  # (B, k * item_embed_dim * 2)
+        # Apply similarity weighting to sequence
+        S_weighted = S * weights  # Element-wise multiplication
         
-        # Max pooling
-        S_masked = S.clone()
+        # Latest k items (still fixed output)
+        S_k = S_weighted[:, -self.k:, :].reshape(batch_size, -1)  # (B, k * item_embed_dim * 2)
+        
+        # Max pooling (now considers similarity)
+        S_masked = S_weighted.clone()
         S_masked[padding_mask] = float('-inf')
         S_max = S_masked.max(dim=1)[0]  # (B, item_embed_dim*2)
         
         # Concatenate
-        S_o = torch.cat([S_k, S_max], dim=1)  # (B, output_dim)
+        S_o = torch.cat([S_k, S_max], dim=1)  # (B, output_dim) 
         
         return S_o
 
@@ -168,7 +170,9 @@ class DCNv2(nn.Module):
         # Concatenate
         return torch.cat([x_cross, x_deep], dim=1)
 
-class CTRModel(nn.Module):    
+class CTRModelWinning(nn.Module):
+    """Exact 1st place solution architecture."""
+    
     def __init__(
         self,
         num_items,
@@ -380,9 +384,9 @@ class CTRModel(nn.Module):
         print(f"{'='*70}")
 
 
-from task2.dataset.dataset import Task2Dataset, collate_fn
-from torch.utils.data import DataLoader
 
+from task2.dataset.dataset import Task2Dataset, collate_fn
+from task2.model_loader import load_item_embeddings_and_tags
 # Load data
 train_dataset = Task2Dataset(data_path="/kaggle/input/www2025-mmctr-data/MicroLens_1M_MMCTR/MicroLens_1M_x1/train.parquet", is_train=True)
 valid_dataset = Task2Dataset(data_path="/kaggle/input/www2025-mmctr-data/MicroLens_1M_MMCTR/MicroLens_1M_x1/valid.parquet", is_train=True)
@@ -391,47 +395,27 @@ train_loader = DataLoader(train_dataset, batch_size=128, shuffle=True, collate_f
 valid_loader = DataLoader(valid_dataset, batch_size=128, shuffle=False, collate_fn=collate_fn)
 
 # Create model
-from model_loader import load_item_embeddings_and_tags
 
 # Load data
 embeddings, item_tags, num_items, num_tags = load_item_embeddings_and_tags(
-    item_info_path="/content/item_info_with_clip.parquet",
-    embedding_source="item_emb_d128"
+    item_info_path="/kaggle/working/item_info_with_clip.parquet",
+    embedding_source="item_clip_emb_d128"
 )
-model = CTRModel(
+
+model = CTRModelWinning(
     num_items=num_items,
     frozen_embeddings=embeddings,
     item_tags=item_tags,
     num_tags=num_tags,
-    embed_dim=64, 
-    tag_embed_dim=16, 
-    k=16, 
-    num_transformer_layers=2, 
+    embed_dim=64,  
+    tag_embed_dim=16,  
+    k=16,  
+    num_transformer_layers=2,  
     num_heads=4,
     num_cross_layers=3,  
-    deep_layers=[1024, 512, 256], 
-    dropout=0.2,
-    learning_rate=5e-4, 
+    deep_layers=[1024, 512, 256],  
+    dropout=0.2,  
+    learning_rate=5e-4,  
 )
 
-checkpoint = torch.load("/kaggle/working/model_0.pth", weights_only=False, map_location='cuda')
-# Load saved state
-model.load_state_dict(checkpoint['model'], strict=False)
-model.optimizer.load_state_dict(checkpoint['optimizer'])
-model.scheduler.load_state_dict(checkpoint['scheduler'])
-
-start_epoch = checkpoint['epoch'] 
-print(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
-print(f"Resuming training from epoch {start_epoch}")
-
-# Resume training
-num_remaining_epochs = 20 - start_epoch
-print(f"Training for {num_remaining_epochs} more epochs\n")
-
-model.fit(
-    train_loader, 
-    valid_loader, 
-    num_epochs=num_remaining_epochs,
-    start_epoch=start_epoch, 
-    save_path="model"
-)
+model.fit(train_loader, valid_loader, num_epochs=20, save_path="best_model.pth")

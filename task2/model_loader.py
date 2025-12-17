@@ -104,3 +104,77 @@ def load_item_embeddings_and_tags(
     
     return embeddings, item_tags, num_items, num_tags
 
+
+def instantiate_ctr_model(
+    embeddings: np.ndarray,
+    item_tags: np.ndarray,
+    num_items: int,
+    num_tags: int,
+    embed_dim: int = 64,
+    tag_embed_dim: int = 16,
+    k: int = 16,
+    transformer_layers: int = 2,
+    num_heads: int = 4,
+    cross_layers: int = 3,
+    deep_layers: list = None,
+    dropout: float = 0.2,
+    learning_rate: float = 5e-4,
+):
+    """
+    Instantiate CTRPredictor model.
+    
+    Args:
+        embeddings: (num_items, 128) numpy array of frozen embeddings
+        item_tags: (num_items, 5) numpy array of tag IDs
+        num_items: Total number of items
+        num_tags: Total number of unique tags
+        embed_dim: Dimension of learnable item embeddings
+        tag_embed_dim: Dimension of learnable tag embeddings
+        k: Number of recent items to consider in sequential learning
+        transformer_layers: Number of transformer encoder layers
+        num_heads: Number of attention heads
+        cross_layers: Number of DCNv2 cross layers
+        deep_layers: List of hidden dimensions for deep network
+        dropout: Dropout rate
+        learning_rate: Initial learning rate
+    
+    Returns:
+        model: CTRPredictor instance on GPU
+    """
+    
+    from task2.model import CTRPredictor
+    
+    if deep_layers is None:
+        deep_layers = [1024, 512, 256]
+    
+    print("="*80)
+    print("INSTANTIATING CTR MODEL")
+    print("="*80)
+    print(f"\nModel hyperparameters:")
+    print(f"  embed_dim: {embed_dim}")
+    print(f"  tag_embed_dim: {tag_embed_dim}")
+    print(f"  k: {k}")
+    print(f"  transformer_layers: {transformer_layers}")
+    print(f"  num_heads: {num_heads}")
+    print(f"  cross_layers: {cross_layers}")
+    print(f"  deep_layers: {deep_layers}")
+    print(f"  dropout: {dropout}")
+    print(f"  learning_rate: {learning_rate}")
+    
+    model = CTRPredictor(
+        num_items=num_items,
+        frozen_embeddings=embeddings,
+        item_tags=item_tags,
+        num_tags=num_tags,
+        embed_dim=embed_dim,
+        tag_embed_dim=tag_embed_dim,
+        k=k,
+        transformer_layers=transformer_layers,
+        num_heads=num_heads,
+        cross_layers=cross_layers,
+        deep_layers=deep_layers,
+        dropout=dropout,
+        learning_rate=learning_rate,
+    )
+    
+    return model
