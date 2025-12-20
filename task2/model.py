@@ -193,10 +193,7 @@ class CTRModelWinning(nn.Module):
         item_emb_dim = self.embedding.final_dim  # 128 + 64 + 16 = 208
         
         # 2. Sequential learning
-        self.seq_learning = SequentialLearning(
-            item_emb_dim, k=k, num_layers=num_transformer_layers, 
-            num_heads=num_heads, dropout=dropout
-        )
+        self.seq_learning = SequentialLearning(item_emb_dim, k=16, num_channels=[256, 256], kernel_size=3, dropout=0.2)
         
         # 3. Side features (likes + views)
         self.side_proj = nn.Linear(2, 32)
