@@ -357,7 +357,7 @@ class CTRModelWinning(nn.Module):
                         'scheduler': self.scheduler.state_dict(),
                         'epoch': epoch,
                         'val_auc': val_auc,
-                    }, f"/content/drive/MyDrive/model_MMCTR_{epoch}.pth")
+                    }, f"/kaggle/working/model_MMCTR_{epoch}.pth")
                     print(f"✓ Saved (AUC: {val_auc:.4f})")
             else:
                 patience_counter += 1
