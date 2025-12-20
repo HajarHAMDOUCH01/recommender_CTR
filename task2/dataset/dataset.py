@@ -13,7 +13,7 @@ class Task2Dataset(Dataset):
             self, 
             data_path: str,
             is_train: bool = True,
-            dataset_size_limit: int = 1500000
+            dataset_size_limit: int = None
     ):
         self.data = pl.read_parquet(data_path)
         self.is_train = is_train
