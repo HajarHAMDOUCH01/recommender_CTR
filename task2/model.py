@@ -27,10 +27,11 @@ class EmbeddingLayer(nn.Module):
         self.tag_emb = nn.Embedding(num_tags, tag_embed_dim, padding_idx=0)
         
         # Initialize
-        nn.init.uniform_(self.item_emb.weight, -0.05, 0.05)
-        self.item_emb.weight.data[0] = 0
-        
-        nn.init.uniform_(self.tag_emb.weight, -0.05, 0.05)
+        # Xavier/Kaiming initialization
+        nn.init.xavier_uniform_(self.item_emb.weight)
+        self.item_emb.weight.data[0] = 0  # Keep padding as zero
+
+        nn.init.xavier_uniform_(self.tag_emb.weight)
         self.tag_emb.weight.data[0] = 0
         
         # Final embedding dim = frozen (128) + learnable (64) + tags (16) = 208
