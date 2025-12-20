@@ -1,142 +1,158 @@
 import torch
-import pandas as pd
+import polars as pl
+import numpy as np
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-
 import sys
 
 sys.path.append("/kaggle/working/recommender_CTR")
 
-from task2.model import CTRModel
 from task2.dataset.dataset import Task2Dataset, collate_fn
+from task2.model import CTRModel
 from task2.model_loader import load_item_embeddings_and_tags
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-def generate_test_predictions(model, test_loader):
-    """
-    Generate predictions for test set.
-    
-    Args:
-        model: Trained CTR model
-        test_loader: DataLoader for test data
-    
-    Returns:
-        predictions: List of predicted probabilities
-        ids: List of sample IDs
-    """
-    model.eval()
-    all_preds = []
-    all_ids = []
-    
-    print(f"\n{'='*70}")
-    print("GENERATING TEST PREDICTIONS")
-    print(f"{'='*70}\n")
-    
-    with torch.no_grad():
-        for batch in tqdm(test_loader, desc='Generating predictions'):
-            batch_data = {k: v.to(device) for k, v in batch.items() 
-                         if k not in ['id', 'labels']}
-            
-            logits = model.forward(batch_data)
-            probs = torch.sigmoid(logits)
-            
-            all_preds.extend(probs.cpu().numpy().tolist())
-            
-            if 'id' in batch:
-                all_ids.extend(batch['id'].tolist())
-            else:
-                start_id = len(all_ids)
-                all_ids.extend(range(start_id, start_id + len(probs)))
-    
-    return all_preds, all_ids
+# Configuration
+TEST_DATA_PATH = "/kaggle/input/www2025-mmctr-data/MicroLens_1M_MMCTR/MicroLens_1M_x1/test.parquet"
+ITEM_INFO_PATH = "/kaggle/working/item_info_with_clip.parquet"
+MODEL_PATH = "/kaggle/working/model_21.pth"
+OUTPUT_PATH = "/kaggle/working/predictions.csv"
+BATCH_SIZE = 256
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
+print("="*80)
+print("MODEL INFERENCE SCRIPT")
+print("="*80)
+print(f"Device: {DEVICE}")
+print(f"Test data: {TEST_DATA_PATH}")
+print(f"Model checkpoint: {MODEL_PATH}")
+print(f"Output: {OUTPUT_PATH}\n")
 
-def save_predictions_to_csv(predictions, ids, output_path='submission.csv'):
-    """
-    Save predictions to CSV in competition format.
-    """
-    df = pd.DataFrame({
-        'id': ids,
-        'Task1&2': predictions
-    })
-    
-    df.to_csv(output_path, index=False)
-    
-    print(f"\n{'='*70}")
-    print(f"✓ PREDICTIONS SAVED")
-    print(f"{'='*70}")
-    print(f"Output file: {output_path}")
-    print(f"Total predictions: {len(predictions):,}")
-    print(f"\nSample predictions:")
-    print(df.head(10))
-    print(f"\nPrediction statistics:")
-    print(f"  Mean: {sum(predictions)/len(predictions):.4f}")
-    print(f"  Min:  {min(predictions):.4f}")
-    print(f"  Max:  {max(predictions):.4f}")
-    print(f"  Predictions > 0.5: {sum(1 for p in predictions if p > 0.5):,} ({sum(1 for p in predictions if p > 0.5)/len(predictions)*100:.2f}%)")
-    print(f"{'='*70}\n")
+# Load embeddings and tags
+print("Loading item embeddings and tags...")
+embeddings, item_tags, num_items, num_tags = load_item_embeddings_and_tags(
+    item_info_path=ITEM_INFO_PATH,
+    embedding_source="item_clip_emb_d128"
+)
 
+# Load test dataset
+print("\nLoading test dataset...")
+test_dataset = Task2Dataset(
+    data_path=TEST_DATA_PATH,
+    is_train=False
+)
 
-if __name__ == "__main__":
-    
-    print("\n" + "="*70)
-    print("TEST PREDICTION SCRIPT")
-    print("="*70 + "\n")
-    
-    print("Loading test dataset...")
-    test_dataset = Task2Dataset(
-        data_path="/kaggle/input/www2025-mmctr-data/MicroLens_1M_MMCTR/MicroLens_1M_x1/test.parquet",
-        is_train=False  
-    )
-    
-    test_loader = DataLoader(
-        test_dataset, 
-        batch_size=256,  
-        shuffle=False,   
-        collate_fn=collate_fn,
-        num_workers=2
-    )
-    
-    print(f"✓ Test dataset loaded: {len(test_dataset):,} samples\n")
-    
-    embeddings, item_tags, num_items, num_tags = load_item_embeddings_and_tags(
-        item_info_path="/kaggle/working/item_info_with_clip.parquet",
-        embedding_source="item_clip_emb_d128"
-    )
-    
-    print("\nInitializing model architecture...")
-    
-    model = CTRModel(
-        num_items=num_items,
-        frozen_embeddings=embeddings,
-        item_tags=item_tags,
-        num_tags=num_tags,
-        embed_dim=64,
-        tag_embed_dim=16,
-        k=16,
-        num_transformer_layers=2,
-        num_heads=4,
-        num_cross_layers=3,
-        deep_layers=[1024, 512, 256],
-        dropout=0.2,
-        learning_rate=5e-4,  
-    )
-    
-    checkpoint_path = "/kaggle/working/model_21.pth"  
-    print(f"\nLoading checkpoint: {checkpoint_path}")
-    
-    checkpoint = torch.load(checkpoint_path, weights_only=False, map_location='cuda')
-    model.load_state_dict(checkpoint['model'], strict=False)
-    
-    print(f"✓ Loaded checkpoint from epoch {checkpoint['epoch']}")
-    if 'val_auc' in checkpoint:
-        print(f"  Validation AUC: {checkpoint['val_auc']:.4f}")
-    
-    model.eval()
-    
-    predictions, ids = generate_test_predictions(model, test_loader)
-    
-    output_path = '/kaggle/working/submission.csv'
-    save_predictions_to_csv(predictions, ids, output_path)
-    
-    print("✓ Done!")
+test_loader = DataLoader(
+    test_dataset,
+    batch_size=BATCH_SIZE,
+    shuffle=False,
+    collate_fn=collate_fn,
+    num_workers=2,
+    pin_memory=True
+)
+
+# Instantiate model with exact architecture
+print("\nInstantiating model...")
+model = CTRModel(
+    num_items=num_items,
+    frozen_embeddings=embeddings,
+    item_tags=item_tags,
+    num_tags=num_tags,
+    embed_dim=64,
+    tag_embed_dim=16,
+    k=16,
+    num_transformer_layers=2,
+    num_heads=4,
+    num_cross_layers=3,
+    deep_layers=[1024, 512, 256],
+    dropout=0.2,
+    learning_rate=5e-4,
+)
+
+# Load checkpoint
+print(f"\nLoading checkpoint from {MODEL_PATH}...")
+checkpoint = torch.load(MODEL_PATH, map_location=DEVICE, weights_only=False)
+
+model.load_state_dict(checkpoint['model'], strict=True)
+print(f"✓ Checkpoint loaded from epoch {checkpoint['epoch']}")
+print(f"  Validation AUC: {checkpoint.get('val_auc', 'N/A')}")
+
+# Set model to evaluation mode
+model.eval()
+model.to(DEVICE)
+
+# Generate predictions
+print("\n" + "="*80)
+print("GENERATING PREDICTIONS")
+print("="*80 + "\n")
+
+all_ids = []
+all_predictions = []
+
+with torch.no_grad():
+    for batch in tqdm(test_loader, desc="Inference"):
+        # Move batch to device
+        batch_gpu = {k: v.to(DEVICE) for k, v in batch.items() if k != 'id'}
+        
+        # Get predictions (logits)
+        logits = model.forward(batch_gpu)
+        
+        # Convert to probabilities
+        probs = torch.sigmoid(logits).cpu().numpy()
+        
+        # Store results
+        if 'id' in batch:
+            all_ids.extend(batch['id'].numpy())
+        all_predictions.extend(probs)
+
+# Convert to arrays
+all_ids = np.array(all_ids)
+all_predictions = np.array(all_predictions)
+
+print(f"\nGenerated {len(all_predictions):,} predictions")
+print(f"Prediction range: [{all_predictions.min():.6f}, {all_predictions.max():.6f}]")
+print(f"Prediction mean: {all_predictions.mean():.6f}, std: {all_predictions.std():.6f}")
+
+# Create submission dataframe
+print("\nCreating submission file...")
+
+# Task 1: Binary prediction (0 or 1)
+# Using 0.5 threshold for binary classification
+task1_predictions = (all_predictions >= 0.5).astype(int)
+
+# Task 2: Probability score
+task2_predictions = all_predictions
+
+# Create dataframe
+submission_df = pl.DataFrame({
+    "id": all_ids,
+    "task1": task1_predictions,
+    "task2": task2_predictions
+})
+
+# Sort by id
+submission_df = submission_df.sort("id")
+
+# Save to CSV
+submission_df.write_csv(OUTPUT_PATH)
+
+print(f"\n✓ Predictions saved to {OUTPUT_PATH}")
+print(f"\nSubmission format:")
+print(submission_df.head(10))
+
+print("\n" + "="*80)
+print("Statistics:")
+print("="*80)
+print(f"Total samples: {len(submission_df):,}")
+print(f"\nTask 1 (Binary):")
+print(f"  Positive predictions: {task1_predictions.sum():,} ({100*task1_predictions.mean():.2f}%)")
+print(f"  Negative predictions: {(1-task1_predictions).sum():,} ({100*(1-task1_predictions.mean()):.2f}%)")
+print(f"\nTask 2 (Probability):")
+print(f"  Min: {task2_predictions.min():.6f}")
+print(f"  Max: {task2_predictions.max():.6f}")
+print(f"  Mean: {task2_predictions.mean():.6f}")
+print(f"  Median: {np.median(task2_predictions):.6f}")
+print(f"  Std: {task2_predictions.std():.6f}")
+
+print("\n" + "="*80)
+print("INFERENCE COMPLETE")
+print("="*80)
