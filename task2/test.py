@@ -127,11 +127,8 @@ print(f"Number of predictions: {len(all_predictions):,}")
 # Verify lengths match
 assert len(all_ids) == len(all_predictions), f"Length mismatch: {len(all_ids)} IDs vs {len(all_predictions)} predictions"
 
-# Task 1: Binary prediction (0 or 1)
-# Using 0.5 threshold for binary classification
-task1_predictions = (all_predictions >= 0.5).astype(int)
-
-# Task 2: Probability score
+# Both tasks use the same probability predictions
+task1_predictions = all_predictions
 task2_predictions = all_predictions
 
 # Create dataframe
@@ -155,15 +152,14 @@ print("\n" + "="*80)
 print("Statistics:")
 print("="*80)
 print(f"Total samples: {len(submission_df):,}")
-print(f"\nTask 1 (Binary):")
-print(f"  Positive predictions: {task1_predictions.sum():,} ({100*task1_predictions.mean():.2f}%)")
-print(f"  Negative predictions: {(1-task1_predictions).sum():,} ({100*(1-task1_predictions.mean()):.2f}%)")
-print(f"\nTask 2 (Probability):")
-print(f"  Min: {task2_predictions.min():.6f}")
-print(f"  Max: {task2_predictions.max():.6f}")
-print(f"  Mean: {task2_predictions.mean():.6f}")
-print(f"  Median: {np.median(task2_predictions):.6f}")
-print(f"  Std: {task2_predictions.std():.6f}")
+print(f"\nPrediction Statistics:")
+print(f"  Min: {all_predictions.min():.6f}")
+print(f"  Max: {all_predictions.max():.6f}")
+print(f"  Mean: {all_predictions.mean():.6f}")
+print(f"  Median: {np.median(all_predictions):.6f}")
+print(f"  Std: {all_predictions.std():.6f}")
+print(f"\nPositive rate (>0.5): {(all_predictions > 0.5).mean()*100:.2f}%")
+print(f"Negative rate (<=0.5): {(all_predictions <= 0.5).mean()*100:.2f}%")
 
 print("\n" + "="*80)
 print("INFERENCE COMPLETE")
