@@ -24,18 +24,18 @@ class EmbeddingLayer(nn.Module):
         
         # Learnable
         self.item_emb = nn.Embedding(num_items, embed_dim, padding_idx=0)
-        self.tag_emb = nn.Embedding(num_tags, tag_embed_dim, padding_idx=0)
+        # self.tag_emb = nn.Embedding(num_tags, tag_embed_dim, padding_idx=0)
         
         # Initialize
         nn.init.uniform_(self.item_emb.weight, -0.05, 0.05)
         self.item_emb.weight.data[0] = 0
         
-        nn.init.uniform_(self.tag_emb.weight, -0.05, 0.05)
-        self.tag_emb.weight.data[0] = 0
+        # nn.init.uniform_(self.tag_emb.weight, -0.05, 0.05)
+        # self.tag_emb.weight.data[0] = 0
         
-        # Final embedding dim = frozen (128) + learnable (64) + tags (16) = 208
+        # Final embedding dim = frozen (128) + learnable (64)
         # But we'll project to fixed dimension
-        self.final_dim = embed_dim + 128 + tag_embed_dim
+        self.final_dim = embed_dim + 128
     
     def forward(self, item_ids):
         """
@@ -51,10 +51,10 @@ class EmbeddingLayer(nn.Module):
         learnable = self.item_emb(item_ids)  # (..., embed_dim)
         
         tags = self.item_tags[item_ids]  # (..., 5)
-        tag_repr = self.tag_emb(tags)  # (..., 5, tag_embed_dim)
-        tag_repr = tag_repr.mean(dim=-2)  # (..., tag_embed_dim)
+        # tag_repr = self.tag_emb(tags)  # (..., 5, tag_embed_dim)
+        # tag_repr = tag_repr.mean(dim=-2)  # (..., tag_embed_dim)
         
-        final_emb = torch.cat([frozen, learnable, tag_repr], dim=-1)  # (..., final_dim)
+        final_emb = torch.cat([frozen, learnable], dim=-1)  # (..., final_dim)
         return final_emb
 
 class SequentialLearning(nn.Module):
@@ -412,15 +412,15 @@ model = CTRModelWinning(
     frozen_embeddings=embeddings,
     item_tags=item_tags,
     num_tags=num_tags,
-    embed_dim=16,           # Minimal
+    embed_dim=64,           # Minimal
     tag_embed_dim=8,        # Minimal
-    k=8,                    # Less context
+    k=16,                    # Less context
     num_transformer_layers=1,
     num_heads=1,
     num_cross_layers=0,     # Skip entirely
     deep_layers=[128],      # Single layer only!
-    dropout=0.7,            # Very aggressive
-    learning_rate=1e-4,     # Lower LR
+    dropout=0.2,            # Very aggressive
+    learning_rate=5e-4,     # Lower LR
 )
 
 model.fit(train_loader, valid_loader, num_epochs=40, save_path="best_model")
