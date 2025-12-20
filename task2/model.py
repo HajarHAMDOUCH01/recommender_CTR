@@ -9,7 +9,7 @@ from sklearn.metrics import roc_auc_score
 import numpy as np
 from tqdm import tqdm
 
-import sys 
+import sys
 sys.path.append("/kaggle/working/recommender_CTR")
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -61,65 +61,72 @@ class EmbeddingLayer(nn.Module):
         return final_emb
 
 class SequentialLearning(nn.Module):
-    """TCN with causal dilated convolutions"""
+    """
+    Transformer-based sequential learning.
+    Input: sequence of item embeddings concatenated with target embedding
+    Output: latest k items flattened + max pooled features
+    """
     
-    def __init__(self, input_dim, k=16, num_channels=[256, 256], kernel_size=3, dropout=0.3):
+    def __init__(self, item_embed_dim, k=16, num_layers=2, num_heads=4, dropout=0.2):
         super().__init__()
         self.k = k
-        self.input_dim = input_dim
+        self.item_embed_dim = item_embed_dim
         
-        layers = []
-        num_levels = len(num_channels)
-        for i in range(num_levels):
-            dilation = 2 ** i
-            in_ch = input_dim * 2 if i == 0 else num_channels[i-1]
-            out_ch = num_channels[i]
-            
-            layers.append(nn.Conv1d(
-                in_ch, out_ch, kernel_size,
-                padding=(kernel_size-1) * dilation,
-                dilation=dilation
-            ))
-            layers.append(nn.ReLU())
-            layers.append(nn.Dropout(dropout))
-            layers.append(nn.BatchNorm1d(out_ch))
-        self.tcn = nn.Sequential(*layers)
-        self.output_dim = k * num_channels[-1] + num_channels[-1]
+        # Transformer encoder
+        encoder_layer = TransformerEncoderLayer(
+            d_model=item_embed_dim * 2,  # Concatenate item + target
+            nhead=num_heads,
+            dim_feedforward=512,
+            batch_first=True,
+            dropout=dropout,
+            activation='relu'
+        )
+        self.transformer = TransformerEncoder(encoder_layer, num_layers=num_layers)
+        
+        # Output: k items flattened + max pool
+        self.output_dim = k * (item_embed_dim * 2) + (item_embed_dim * 2)
     
     def forward(self, item_ids, item_embeds, target_emb):
+        """
+        Args:
+            item_ids: (B, seq_len) - for masking
+            item_embeds: (B, seq_len, item_embed_dim)
+            target_emb: (B, item_embed_dim)
+            
+        Returns:
+            S_o: (B, output_dim)
+        """
         batch_size, seq_len = item_ids.shape
         
-        # Concatenate target with each item
-        target_expanded = target_emb.unsqueeze(1).expand(-1, seq_len, -1)
-        seq_input = torch.cat([item_embeds, target_expanded], dim=-1)
+        # Concatenate target with each sequence item
+        target_expanded = target_emb.unsqueeze(1).expand(-1, seq_len, -1)  # (B, seq_len, item_embed_dim)
+        seq_input = torch.cat([item_embeds, target_expanded], dim=-1)  # (B, seq_len, item_embed_dim*2)
         
-        # TCN expects (B, C, L)
-        seq_input = seq_input.transpose(1, 2)  # (B, input_dim*2, seq_len)
-        
-        # Apply TCN
-        output = self.tcn(seq_input)  # (B, num_channels[-1], seq_len)
-        
-        # Remove causal padding
-        output = output[:, :, :seq_len]
-        output = output.transpose(1, 2)  # (B, seq_len, num_channels[-1])
-        
-        # Mask padding
+        # Create padding mask
         padding_mask = (item_ids == 0)
-        output_masked = output.clone()
-        output_masked[padding_mask] = float('-inf')
         
-        # Latest k items + max pool
-        output_k = output[:, -self.k:, :].reshape(batch_size, -1)
-        output_max = output_masked.max(dim=1)[0]
+        # Transformer
+        S = self.transformer(seq_input, src_key_padding_mask=padding_mask)  # (B, seq_len, item_embed_dim*2)
         
-        return torch.cat([output_k, output_max], dim=1)
+        # Latest k items
+        S_k = S[:, -self.k:, :].reshape(batch_size, -1)  # (B, k * item_embed_dim * 2)
+        
+        # Max pooling
+        S_masked = S.clone()
+        S_masked[padding_mask] = float('-inf')
+        S_max = S_masked.max(dim=1)[0]  # (B, item_embed_dim*2)
+        
+        # Concatenate
+        S_o = torch.cat([S_k, S_max], dim=1)  # (B, output_dim)
+        
+        return S_o
 
 class DCNv2(nn.Module):
     """
     Deep & Cross Network v2 for feature interaction.
     """
     
-    def __init__(self, input_dim, num_cross_layers=2, deep_layers=None, dropout=0.2):
+    def __init__(self, input_dim, num_cross_layers=3, deep_layers=None, dropout=0.2):
         super().__init__()
         
         if deep_layers is None:
@@ -163,7 +170,6 @@ class DCNv2(nn.Module):
         # Concatenate
         return torch.cat([x_cross, x_deep], dim=1)
 
-
 class CTRModelWinning(nn.Module):
     """Exact 1st place solution architecture."""
     
@@ -195,7 +201,10 @@ class CTRModelWinning(nn.Module):
         item_emb_dim = self.embedding.final_dim  # 128 + 64 + 16 = 208
         
         # 2. Sequential learning
-        self.seq_learning = SequentialLearning(item_emb_dim, k=16, num_channels=[256, 256], kernel_size=3, dropout=0.2)
+        self.seq_learning = SequentialLearning(
+            item_emb_dim, k=k, num_layers=num_transformer_layers, 
+            num_heads=num_heads, dropout=dropout
+        )
         
         # 3. Side features (likes + views)
         self.side_proj = nn.Linear(2, 32)
@@ -216,7 +225,7 @@ class CTRModelWinning(nn.Module):
         self.to(device)
         
         # Optimizer
-        self.optimizer = Adam(self.parameters(), lr=learning_rate, weight_decay=1e-3)
+        self.optimizer = Adam(self.parameters(), lr=learning_rate, weight_decay=1e-5)
         self.scheduler = ReduceLROnPlateau(self.optimizer, mode='max', factor=0.5, patience=3)
         self.criterion = None
         
@@ -359,7 +368,7 @@ class CTRModelWinning(nn.Module):
                         'scheduler': self.scheduler.state_dict(),
                         'epoch': epoch,
                         'val_auc': val_auc,
-                    }, f"/kaggle/working/model_MMCTR_{epoch}.pth")
+                    }, f"/content/drive/MyDrive/model_MMCTR_{epoch}.pth")
                     print(f"✓ Saved (AUC: {val_auc:.4f})")
             else:
                 patience_counter += 1
@@ -376,9 +385,10 @@ class CTRModelWinning(nn.Module):
 from torch.utils.data import DataLoader
 from task2.dataset.dataset import Task2Dataset, collate_fn
 from task2.model_loader import load_item_embeddings_and_tags
+
 # Load data
-train_dataset = Task2Dataset(data_path="/kaggle/input/www2025-mmctr-data/MicroLens_1M_MMCTR/MicroLens_1M_x1/train.parquet", is_train=True)
-valid_dataset = Task2Dataset(data_path="/kaggle/input/www2025-mmctr-data/MicroLens_1M_MMCTR/MicroLens_1M_x1/valid.parquet", is_train=True)
+train_dataset = Task2Dataset(data_path="/kaggle/input/www2025-mmctr-data/versions/1/MicroLens_1M_MMCTR/MicroLens_1M_x1/train.parquet", is_train=True)
+valid_dataset = Task2Dataset(data_path="/kaggle/input/www2025-mmctr-data/versions/1/MicroLens_1M_MMCTR/MicroLens_1M_x1/valid.parquet", is_train=True)
 
 train_loader = DataLoader(train_dataset, batch_size=128, shuffle=True, collate_fn=collate_fn)
 valid_loader = DataLoader(valid_dataset, batch_size=128, shuffle=False, collate_fn=collate_fn)
@@ -391,7 +401,7 @@ embeddings, item_tags, num_items, num_tags = load_item_embeddings_and_tags(
     embedding_source="item_clip_emb_d128"
 )
 
-# checkpoint = torch.load("/root/.cache/huggingface/hub/models--hajar001--mmCTR/snapshots/37d27ea2c89670e11a20615421253012fbfdb9ef/model_21.pth", weights_only=False, map_location='cuda')
+checkpoint = torch.load("/kaggle/working/model_21.pth", weights_only=False, map_location='cuda')
 
 
 model = CTRModelWinning(
@@ -402,31 +412,31 @@ model = CTRModelWinning(
     embed_dim=64,  # Exact
     tag_embed_dim=16,  # Exact
     k=16,  # Exact
-    num_transformer_layers=3,  # Exact
+    num_transformer_layers=2,  # Exact
     num_heads=4,
-    num_cross_layers=4,  # Exact
+    num_cross_layers=3,  # Exact
     deep_layers=[1024, 512, 256],  # Exact
-    dropout=0.4,  # Exact
-    learning_rate=5e-5,  # Exact
+    dropout=0.2,  # Exact
+    learning_rate=5e-4,  # Exact
 )
 
 # Load saved state
-# model.load_state_dict(checkpoint['model'], strict=False)
-# model.optimizer.load_state_dict(checkpoint['optimizer'])
-# model.scheduler.load_state_dict(checkpoint['scheduler'])
+model.load_state_dict(checkpoint['model'], strict=False)
+model.optimizer.load_state_dict(checkpoint['optimizer'])
+model.scheduler.load_state_dict(checkpoint['scheduler'])
 
-# start_epoch = checkpoint['epoch'] 
-# print(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
-# print(f"Resuming training from epoch {start_epoch}")
+start_epoch = checkpoint['epoch'] 
+print(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
+print(f"Resuming training from epoch {start_epoch}")
 
 # Resume training
-# num_remaining_epochs = 50 - start_epoch
-# print(f"Training for {num_remaining_epochs} more epochs\n")
+num_remaining_epochs = 50 - start_epoch
+print(f"Training for {num_remaining_epochs} more epochs\n")
 
 model.fit(
     train_loader, 
     valid_loader, 
-    num_epochs=40,
-    start_epoch=0, 
+    num_epochs=num_remaining_epochs,
+    start_epoch=start_epoch, 
     save_path="model"
 )
