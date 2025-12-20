@@ -400,7 +400,7 @@ embeddings, item_tags, num_items, num_tags = load_item_embeddings_and_tags(
     embedding_source="item_clip_emb_d128"
 )
 
-checkpoint = torch.load("/kaggle/working/model_21.pth", weights_only=False, map_location='cuda')
+checkpoint = torch.load("/kaggle/working/model_MMCTR_21.pth", weights_only=False, map_location='cuda')
 
 
 model = CTRModelWinning(
