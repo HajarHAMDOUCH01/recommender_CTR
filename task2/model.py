@@ -419,7 +419,7 @@ model = CTRModelWinning(
     num_heads=2,
     num_cross_layers=0,    
     deep_layers=[256, 128],     
-    dropout=0.4,           
+    dropout=0.65,           
     learning_rate=5e-5,     
 )
 
