@@ -231,8 +231,6 @@ class CTRModelWinning(nn.Module):
         # Info
         trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
         print(f"\n{'='*70}")
-        print(f"CTR Model: 1st Place WWW 2025 Solution")
-        print(f"{'='*70}")
         print(f"Trainable params: {trainable:,}")
         print(f"Item embedding dim: {item_emb_dim}")
         print(f"Seq output dim: {self.seq_learning.output_dim}")
