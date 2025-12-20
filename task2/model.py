@@ -34,11 +34,11 @@ class EmbeddingLayer(nn.Module):
         nn.init.uniform_(self.tag_emb.weight, -0.05, 0.05)
         self.tag_emb.weight.data[0] = 0
         
-        self.final_dim = embed_dim + 128
+        self.final_dim = embed_dim + 128 + tag_embed_dim  # frozen + learnable + tag_repr
     
     def forward(self, item_ids):
         """
-        Returns concatenation: frozen || learnable_id
+        Returns concatenation: frozen || learnable_id || tag_repr
         
         Args:
             item_ids: (...,) tensor
@@ -53,7 +53,7 @@ class EmbeddingLayer(nn.Module):
         tag_repr = self.tag_emb(tags)  # (..., 5, tag_embed_dim)
         tag_repr = tag_repr.mean(dim=-2)  # (..., tag_embed_dim)
         
-        final_emb = torch.cat([frozen, learnable], dim=-1)  # (..., final_dim)
+        final_emb = torch.cat([frozen, learnable, tag_repr], dim=-1)  # (..., final_dim)
         return final_emb
 
 class SequentialLearning(nn.Module):
