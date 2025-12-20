@@ -73,7 +73,7 @@ class SequentialLearning(nn.Module):
         encoder_layer = TransformerEncoderLayer(
             d_model=item_embed_dim * 2,  # Concatenate item + target
             nhead=num_heads,
-            dim_feedforward=256,
+            dim_feedforward=512,
             batch_first=True,
             dropout=dropout,
             activation='relu'
@@ -84,41 +84,41 @@ class SequentialLearning(nn.Module):
         self.output_dim = k * (item_embed_dim * 2) + (item_embed_dim * 2)
     
     def forward(self, item_ids, item_embeds, target_emb):
+        """
+        Args:
+            item_ids: (B, seq_len) - for masking
+            item_embeds: (B, seq_len, item_embed_dim)
+            target_emb: (B, item_embed_dim)
+            
+        Returns:
+            S_o: (B, output_dim)
+        """
         batch_size, seq_len = item_ids.shape
         
         # Concatenate target with each sequence item
-        target_expanded = target_emb.unsqueeze(1).expand(-1, seq_len, -1)
-        seq_input = torch.cat([item_embeds, target_expanded], dim=-1)
-        
-        # Compute similarity scores
-        sim_scores = F.cosine_similarity(target_emb.unsqueeze(1), item_embeds, dim=-1)  # (B, seq_len)
+        target_expanded = target_emb.unsqueeze(1).expand(-1, seq_len, -1)  # (B, seq_len, item_embed_dim)
+        seq_input = torch.cat([item_embeds, target_expanded], dim=-1)  # (B, seq_len, item_embed_dim*2)
         
         # Create padding mask
         padding_mask = (item_ids == 0)
         
-        # items that are either padded OR similar to target
-        sim_mask = (sim_scores > 0.5)  # (B, seq_len)
-        
-        # Combine: use padding mask, but weight by similarity
-        weights = torch.where(padding_mask, torch.zeros_like(sim_scores), sim_scores)  # (B, seq_len)
-        weights = weights.unsqueeze(-1)  # (B, seq_len, 1)
-        
         # Transformer
         S = self.transformer(seq_input, src_key_padding_mask=padding_mask)  # (B, seq_len, item_embed_dim*2)
         
-        # Apply similarity weighting to sequence
-        S_weighted = S * weights  # Element-wise multiplication
+        # Latest k items
+        S_k = S[:, -self.k:, :].reshape(batch_size, -1)  # (B, k * item_embed_dim * 2)
         
-        # Latest k items (still fixed output)
-        S_k = S_weighted[:, -self.k:, :].reshape(batch_size, -1)  # (B, k * item_embed_dim * 2)
-        
-        # Max pooling (now considers similarity)
-        S_masked = S_weighted.clone()
-        S_masked[padding_mask] = float('-inf')
-        S_max = S_masked.max(dim=1)[0]  # (B, item_embed_dim*2)
+        # Max pooling
+        S_masked = S.clone()
+        # S_masked[padding_mask] = float('-inf')
+        S_max = torch.where(
+            padding_mask.all(dim=1, keepdim=True),
+            torch.zeros_like(S_masked[:, 0, :]),  # Default value if all padded
+            S_masked.max(dim=1)[0]
+        )  
         
         # Concatenate
-        S_o = torch.cat([S_k, S_max], dim=1)  # (B, output_dim) 
+        S_o = torch.cat([S_k, S_max], dim=1)  # (B, output_dim)
         
         return S_o
 
@@ -136,6 +136,12 @@ class DCNv2(nn.Module):
         # Cross layers
         self.cross_layers = nn.ModuleList([
             nn.Linear(input_dim, input_dim, bias=True)
+            for _ in range(num_cross_layers)
+        ])
+
+        # Layer normalizations
+        self.cross_norms = nn.ModuleList([
+            nn.LayerNorm(input_dim)
             for _ in range(num_cross_layers)
         ])
         
@@ -161,9 +167,9 @@ class DCNv2(nn.Module):
             output: (B, output_dim)
         """
         # Cross path
-        x_cross = x0
-        for layer in self.cross_layers:
-            x_cross = x0 * layer(x_cross) + x_cross
+        for layer, norm in zip(self.cross_layers, self.cross_norms):
+            x_cross = x0 * layer(x_cross) + x_cross  # Cross interaction
+            x_cross = norm(x_cross)
         
         # Deep path
         x_deep = self.deep_net(x0)
