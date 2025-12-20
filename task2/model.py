@@ -8,8 +8,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from sklearn.metrics import roc_auc_score
 import numpy as np
 from tqdm import tqdm
-import sys 
-sys.path.append("/kaggle/working/recommender_CTR")
+
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 class EmbeddingLayer(nn.Module):
@@ -24,18 +23,18 @@ class EmbeddingLayer(nn.Module):
         
         # Learnable
         self.item_emb = nn.Embedding(num_items, embed_dim, padding_idx=0)
-        # self.tag_emb = nn.Embedding(num_tags, tag_embed_dim, padding_idx=0)
+        self.tag_emb = nn.Embedding(num_tags, tag_embed_dim, padding_idx=0)
         
         # Initialize
         nn.init.uniform_(self.item_emb.weight, -0.05, 0.05)
         self.item_emb.weight.data[0] = 0
         
-        # nn.init.uniform_(self.tag_emb.weight, -0.05, 0.05)
-        # self.tag_emb.weight.data[0] = 0
+        nn.init.uniform_(self.tag_emb.weight, -0.05, 0.05)
+        self.tag_emb.weight.data[0] = 0
         
-        # Final embedding dim = frozen (128) + learnable (64)
+        # Final embedding dim = frozen (128) + learnable (64) + tags (16) = 208
         # But we'll project to fixed dimension
-        self.final_dim = embed_dim + 128
+        self.final_dim = embed_dim + 128 + tag_embed_dim
     
     def forward(self, item_ids):
         """
@@ -51,10 +50,10 @@ class EmbeddingLayer(nn.Module):
         learnable = self.item_emb(item_ids)  # (..., embed_dim)
         
         tags = self.item_tags[item_ids]  # (..., 5)
-        # tag_repr = self.tag_emb(tags)  # (..., 5, tag_embed_dim)
-        # tag_repr = tag_repr.mean(dim=-2)  # (..., tag_embed_dim)
+        tag_repr = self.tag_emb(tags)  # (..., 5, tag_embed_dim)
+        tag_repr = tag_repr.mean(dim=-2)  # (..., tag_embed_dim)
         
-        final_emb = torch.cat([frozen, learnable], dim=-1)  # (..., final_dim)
+        final_emb = torch.cat([frozen, learnable, tag_repr], dim=-1)  # (..., final_dim)
         return final_emb
 
 class SequentialLearning(nn.Module):
@@ -84,41 +83,41 @@ class SequentialLearning(nn.Module):
         self.output_dim = k * (item_embed_dim * 2) + (item_embed_dim * 2)
     
     def forward(self, item_ids, item_embeds, target_emb):
-        """
-        Args:
-            item_ids: (B, seq_len) - for masking
-            item_embeds: (B, seq_len, item_embed_dim)
-            target_emb: (B, item_embed_dim)
-            
-        Returns:
-            S_o: (B, output_dim)
-        """
         batch_size, seq_len = item_ids.shape
         
         # Concatenate target with each sequence item
-        target_expanded = target_emb.unsqueeze(1).expand(-1, seq_len, -1)  # (B, seq_len, item_embed_dim)
-        seq_input = torch.cat([item_embeds, target_expanded], dim=-1)  # (B, seq_len, item_embed_dim*2)
+        target_expanded = target_emb.unsqueeze(1).expand(-1, seq_len, -1)
+        seq_input = torch.cat([item_embeds, target_expanded], dim=-1)
+        
+        # Compute similarity scores
+        sim_scores = F.cosine_similarity(target_emb.unsqueeze(1), item_embeds, dim=-1)  # (B, seq_len)
         
         # Create padding mask
         padding_mask = (item_ids == 0)
         
+        # items that are either padded OR similar to target
+        sim_mask = (sim_scores > 0.5)  # (B, seq_len)
+        
+        # Combine: use padding mask, but weight by similarity
+        weights = torch.where(padding_mask, torch.zeros_like(sim_scores), sim_scores)  # (B, seq_len)
+        weights = weights.unsqueeze(-1)  # (B, seq_len, 1)
+        
         # Transformer
         S = self.transformer(seq_input, src_key_padding_mask=padding_mask)  # (B, seq_len, item_embed_dim*2)
         
-        # Latest k items
-        S_k = S[:, -self.k:, :].reshape(batch_size, -1)  # (B, k * item_embed_dim * 2)
+        # Apply similarity weighting to sequence
+        S_weighted = S * weights  # Element-wise multiplication
         
-        # Max pooling
-        S_masked = S.clone()
-        # S_masked[padding_mask] = float('-inf')
-        S_max = torch.where(
-            padding_mask.all(dim=1, keepdim=True),
-            torch.zeros_like(S_masked[:, 0, :]),  # Default value if all padded
-            S_masked.max(dim=1)[0]
-        )  
+        # Latest k items (still fixed output)
+        S_k = S_weighted[:, -self.k:, :].reshape(batch_size, -1)  # (B, k * item_embed_dim * 2)
+        
+        # Max pooling (now considers similarity)
+        S_masked = S_weighted.clone()
+        S_masked[padding_mask] = float('-inf')
+        S_max = S_masked.max(dim=1)[0]  # (B, item_embed_dim*2)
         
         # Concatenate
-        S_o = torch.cat([S_k, S_max], dim=1)  # (B, output_dim)
+        S_o = torch.cat([S_k, S_max], dim=1)  # (B, output_dim) 
         
         return S_o
 
@@ -127,7 +126,7 @@ class DCNv2(nn.Module):
     Deep & Cross Network v2 for feature interaction.
     """
     
-    def __init__(self, input_dim, num_cross_layers=3, deep_layers=None, dropout=0.5):
+    def __init__(self, input_dim, num_cross_layers=3, deep_layers=None, dropout=0.2):
         super().__init__()
         
         if deep_layers is None:
@@ -136,12 +135,6 @@ class DCNv2(nn.Module):
         # Cross layers
         self.cross_layers = nn.ModuleList([
             nn.Linear(input_dim, input_dim, bias=True)
-            for _ in range(num_cross_layers)
-        ])
-
-        # Layer normalizations
-        self.cross_norms = nn.ModuleList([
-            nn.LayerNorm(input_dim)
             for _ in range(num_cross_layers)
         ])
         
@@ -154,7 +147,7 @@ class DCNv2(nn.Module):
             layers.append(nn.Dropout(dropout))
             in_dim = h_dim
         self.deep_net = nn.Sequential(*layers)
-        # self.output_dim = deep_layers[-1]
+        
         # Output concatenation
         self.output_dim = input_dim + deep_layers[-1]
     
@@ -168,13 +161,12 @@ class DCNv2(nn.Module):
         """
         # Cross path
         x_cross = x0
-        for layer, norm in zip(self.cross_layers, self.cross_norms):
-            x_cross = x0 * layer(x_cross) + x_cross  # Cross interaction
-            x_cross = norm(x_cross)
+        for layer in self.cross_layers:
+            x_cross = x0 * layer(x_cross) + x_cross
         
         # Deep path
         x_deep = self.deep_net(x0)
-        # return x_deep
+        
         # Concatenate
         return torch.cat([x_cross, x_deep], dim=1)
 
@@ -194,7 +186,7 @@ class CTRModelWinning(nn.Module):
         num_heads=4,
         num_cross_layers=3,
         deep_layers=None,
-        dropout=0.5,
+        dropout=0.2,
         learning_rate=5e-4,
     ):
         super().__init__()
@@ -234,7 +226,7 @@ class CTRModelWinning(nn.Module):
         
         # Optimizer
         self.optimizer = Adam(self.parameters(), lr=learning_rate, weight_decay=1e-5)
-        self.scheduler = ReduceLROnPlateau(self.optimizer, mode='max', factor=0.2, patience=1)
+        self.scheduler = ReduceLROnPlateau(self.optimizer, mode='max', factor=0.5, patience=3)
         self.criterion = None
         
         # Info
@@ -339,7 +331,7 @@ class CTRModelWinning(nn.Module):
         auc = self.compute_auc(torch.cat(all_preds), torch.cat(all_labels))
         return avg_loss, auc
     
-    def fit(self, train_loader, valid_loader, num_epochs=40, start_epoch=0, save_path=None):
+    def fit(self, train_loader, valid_loader, num_epochs=20, start_epoch=0, save_path=None):
         
         # Calculate pos_weight
         pos_weight = 3.0000
@@ -376,7 +368,7 @@ class CTRModelWinning(nn.Module):
                         'scheduler': self.scheduler.state_dict(),
                         'epoch': epoch,
                         'val_auc': val_auc,
-                    }, f"{save_path}_{epoch}.pth")
+                    }, f"/content/drive/MyDrive/model_MMCTR_{epoch}.pth")
                     print(f"✓ Saved (AUC: {val_auc:.4f})")
             else:
                 patience_counter += 1
@@ -390,11 +382,12 @@ class CTRModelWinning(nn.Module):
 
 
 
+from torch.utils.data import DataLoader
 from task2.dataset.dataset import Task2Dataset, collate_fn
 from task2.model_loader import load_item_embeddings_and_tags
 # Load data
-train_dataset = Task2Dataset(data_path="/kaggle/input/www2025-mmctr-data/MicroLens_1M_MMCTR/MicroLens_1M_x1/train.parquet", is_train=True)
-valid_dataset = Task2Dataset(data_path="/kaggle/input/www2025-mmctr-data/MicroLens_1M_MMCTR/MicroLens_1M_x1/valid.parquet", is_train=True)
+train_dataset = Task2Dataset(data_path="/kaggle/working/www2025-mmctr-data/MicroLens_1M_MMCTR/MicroLens_1M_x1/train.parquet", is_train=True)
+valid_dataset = Task2Dataset(data_path="/kaggle/working/www2025-mmctr-data/MicroLens_1M_MMCTR/MicroLens_1M_x1/valid.parquet", is_train=True)
 
 train_loader = DataLoader(train_dataset, batch_size=128, shuffle=True, collate_fn=collate_fn)
 valid_loader = DataLoader(valid_dataset, batch_size=128, shuffle=False, collate_fn=collate_fn)
@@ -403,24 +396,46 @@ valid_loader = DataLoader(valid_dataset, batch_size=128, shuffle=False, collate_
 
 # Load data
 embeddings, item_tags, num_items, num_tags = load_item_embeddings_and_tags(
-    item_info_path="/kaggle/working/item_info_with_clip.parquet",
+    item_info_path="/content/item_info_with_clip (2).parquet",
     embedding_source="item_clip_emb_d128"
 )
+
+# checkpoint = torch.load("/root/.cache/huggingface/hub/models--hajar001--mmCTR/snapshots/37d27ea2c89670e11a20615421253012fbfdb9ef/model_21.pth", weights_only=False, map_location='cuda')
+
 
 model = CTRModelWinning(
     num_items=num_items,
     frozen_embeddings=embeddings,
     item_tags=item_tags,
     num_tags=num_tags,
-    embed_dim=64,          
-    tag_embed_dim=8,       
-    k=16,                   
-    num_transformer_layers=2,
-    num_heads=1,
-    num_cross_layers=0,    
-    deep_layers=[256, 128],     
-    dropout=0.7,           
-    learning_rate=5e-5,     
+    embed_dim=64,  # Exact
+    tag_embed_dim=16,  # Exact
+    k=16,  # Exact
+    num_transformer_layers=2,  # Exact
+    num_heads=4,
+    num_cross_layers=3,  # Exact
+    deep_layers=[1024, 512, 256],  # Exact
+    dropout=0.2,  # Exact
+    learning_rate=5e-4,  # Exact
 )
 
-model.fit(train_loader, valid_loader, num_epochs=40, save_path="best_model")
+# Load saved state
+# model.load_state_dict(checkpoint['model'], strict=False)
+# model.optimizer.load_state_dict(checkpoint['optimizer'])
+# model.scheduler.load_state_dict(checkpoint['scheduler'])
+
+# start_epoch = checkpoint['epoch'] 
+# print(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
+# print(f"Resuming training from epoch {start_epoch}")
+
+# Resume training
+# num_remaining_epochs = 50 - start_epoch
+# print(f"Training for {num_remaining_epochs} more epochs\n")
+
+model.fit(
+    train_loader, 
+    valid_loader, 
+    num_epochs=40,
+    start_epoch=0, 
+    save_path="model"
+)
