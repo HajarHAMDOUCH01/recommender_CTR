@@ -412,14 +412,14 @@ model = CTRModelWinning(
     frozen_embeddings=embeddings,
     item_tags=item_tags,
     num_tags=num_tags,
-    embed_dim=128,          
+    embed_dim=64,          
     tag_embed_dim=8,       
     k=16,                   
     num_transformer_layers=2,
-    num_heads=2,
+    num_heads=1,
     num_cross_layers=0,    
     deep_layers=[256, 128],     
-    dropout=0.65,           
+    dropout=0.7,           
     learning_rate=5e-5,     
 )
 
