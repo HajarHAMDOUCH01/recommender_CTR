@@ -415,11 +415,11 @@ model = CTRModelWinning(
     embed_dim=64,           # Minimal
     tag_embed_dim=8,        # Minimal
     k=16,                    # Less context
-    num_transformer_layers=1,
+    num_transformer_layers=2,
     num_heads=1,
     num_cross_layers=0,     # Skip entirely
-    deep_layers=[128],      # Single layer only!
-    dropout=0.2,            # Very aggressive
+    deep_layers=[256],      # Single layer only!
+    dropout=0.4,            # Very aggressive
     learning_rate=5e-4,     # Lower LR
 )
 
