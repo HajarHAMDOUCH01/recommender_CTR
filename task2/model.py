@@ -167,6 +167,7 @@ class DCNv2(nn.Module):
             output: (B, output_dim)
         """
         # Cross path
+        x_cross = x0
         for layer, norm in zip(self.cross_layers, self.cross_norms):
             x_cross = x0 * layer(x_cross) + x_cross  # Cross interaction
             x_cross = norm(x_cross)
