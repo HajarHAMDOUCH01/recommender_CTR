@@ -72,7 +72,7 @@ model = CTRModel(
 print(f"\nLoading checkpoint from {MODEL_PATH}...")
 checkpoint = torch.load(MODEL_PATH, map_location=DEVICE, weights_only=False)
 
-model.load_state_dict(checkpoint['model'], strict=True)
+model.load_state_dict(checkpoint['model'], strict=False)
 print(f"✓ Checkpoint loaded from epoch {checkpoint['epoch']}")
 print(f"  Validation AUC: {checkpoint.get('val_auc', 'N/A')}")
 
