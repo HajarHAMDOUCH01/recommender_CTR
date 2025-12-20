@@ -413,7 +413,7 @@ model = CTRModelWinning(
     num_cross_layers=3,  
     deep_layers=[256, 128],  
     dropout=0.5,  
-    learning_rate=5e-4,  
+    learning_rate=5e-5,  
 )
 
 model.fit(train_loader, valid_loader, num_epochs=40, save_path="best_model")
