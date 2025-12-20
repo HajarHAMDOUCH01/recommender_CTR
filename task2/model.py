@@ -612,11 +612,11 @@ def main():
     # Load your data
     # Adjust paths according to your setup
     train_dataset = Task2Dataset(
-        data_path="/path/to/train.parquet",
+        data_path="/kaggle/input/www2025-mmctr-data/MicroLens_1M_MMCTR/MicroLens_1M_x1/train.parquet",
         is_train=True
     )
     valid_dataset = Task2Dataset(
-        data_path="/path/to/valid.parquet",
+        data_path="/kaggle/input/www2025-mmctr-data/MicroLens_1M_MMCTR/MicroLens_1M_x1/valid.parquet",
         is_train=True
     )
     
@@ -639,7 +639,7 @@ def main():
     
     # Load frozen embeddings
     embeddings, _, num_items, _ = load_item_embeddings_and_tags(
-        item_info_path="/path/to/item_info_with_clip.parquet",
+        item_info_path="/kaggle/working/item_info_with_clip.parquet",
         embedding_source="item_clip_emb_d128"
     )
     
@@ -686,12 +686,12 @@ def resume_training():
     
     # Load frozen embeddings
     embeddings, _, num_items, _ = load_item_embeddings_and_tags(
-        item_info_path="/path/to/item_info_with_clip.parquet",
+        item_info_path="/kaggle/working/item_info_with_clip.parquet",
         embedding_source="item_clip_emb_d128"
     )
     
     # Load from checkpoint
-    checkpoint_path = "./checkpoints/model_epoch10_auc0.8234.pth"
+    checkpoint_path = None
     model, start_epoch = CTRModelImproved.load_from_checkpoint(
         checkpoint_path=checkpoint_path,
         frozen_embeddings=embeddings
@@ -723,7 +723,7 @@ def inference_example():
     
     # Load frozen embeddings
     embeddings, _, num_items, _ = load_item_embeddings_and_tags(
-        item_info_path="/path/to/item_info_with_clip.parquet",
+        item_info_path="/kaggle/working/item_info_with_clip.parquet",
         embedding_source="item_clip_emb_d128"
     )
     
@@ -738,7 +738,7 @@ def inference_example():
     
     # Prepare test data
     test_dataset = Task2Dataset(
-        data_path="/path/to/test.parquet",
+        data_path="/kaggle/input/www2025-mmctr-data/MicroLens_1M_MMCTR/MicroLens_1M_x1/test.parquet",
         is_train=False
     )
     test_loader = DataLoader(
