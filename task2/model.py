@@ -412,15 +412,15 @@ model = CTRModelWinning(
     frozen_embeddings=embeddings,
     item_tags=item_tags,
     num_tags=num_tags,
-    embed_dim=64,           # Minimal
-    tag_embed_dim=8,        # Minimal
-    k=16,                    # Less context
+    embed_dim=64,          
+    tag_embed_dim=8,       
+    k=16,                   
     num_transformer_layers=2,
     num_heads=1,
-    num_cross_layers=0,     # Skip entirely
-    deep_layers=[256],      # Single layer only!
-    dropout=0.4,            # Very aggressive
-    learning_rate=5e-4,     # Lower LR
+    num_cross_layers=0,    
+    deep_layers=[256],     
+    dropout=0.4,           
+    learning_rate=5e-4,     
 )
 
 model.fit(train_loader, valid_loader, num_epochs=40, save_path="best_model")
